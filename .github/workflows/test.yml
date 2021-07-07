@@ -13,6 +13,8 @@ jobs:
       GOPROXY: direct
       GRADLE_OPTS: -Dorg.gradle.daemon=false
     steps:
+      - name: Chown
+        run: sudo chown -R $USER:$USER ${{ github.workspace }}
       - uses: actions/checkout@v1
       - name: Setup Go
         uses: actions/setup-go@v2
