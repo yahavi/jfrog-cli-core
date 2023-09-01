@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/jfrog/gofrog/datastructures"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/jfrog/gofrog/datastructures"
 
 	"github.com/jfrog/build-info-go/build"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
@@ -25,25 +26,11 @@ import (
 )
 
 const (
-	remoteDepTreePath    = "artifactory/oss-release-local"
-	gradlew              = "gradlew"
-	gradleDepTreeJarFile = "gradle-dep-tree.jar"
-	depTreeInitFile      = "gradledeptree.init"
-	depTreeOutputFile    = "gradledeptree.out"
-	depTreeInitScript    = `initscript {
-	repositories { %s
-		mavenCentral()
-	}
-	dependencies {
-		classpath files('%s')
-	}
-}
-
-allprojects {
-	repositories { %s
-	}
-	apply plugin: com.jfrog.GradleDepTree
-}`
+	remoteDepTreePath     = "artifactory/oss-release-local"
+	gradlew               = "gradlew"
+	gradleDepTreeJarFile  = "gradle-dep-tree.jar"
+	depTreeInitFile       = "gradledeptree.init"
+	depTreeOutputFile     = "gradledeptree.out"
 	artifactoryRepository = `
 		maven {
 			url "%s/%s"
@@ -56,6 +43,9 @@ allprojects {
 
 //go:embed gradle-dep-tree.jar
 var gradleDepTreeJar []byte
+
+//go:embed init-dep-tree.gradle
+var depTreeInitScriptPattern string
 
 type depTreeManager struct {
 	dependenciesTree
@@ -169,7 +159,7 @@ func (dtp *depTreeManager) createDepTreeScriptAndGetDir() (tmpDir string, err er
 	}
 	gradleDepTreeJarPath = ioutils.DoubleWinPathSeparator(gradleDepTreeJarPath)
 
-	depTreeInitScript := fmt.Sprintf(depTreeInitScript, dtp.releasesRepo, gradleDepTreeJarPath, dtp.depsRepo)
+	depTreeInitScript := fmt.Sprintf(depTreeInitScriptPattern, dtp.releasesRepo, gradleDepTreeJarPath, dtp.depsRepo, dtp.depsRepo)
 	return tmpDir, errorutils.CheckError(os.WriteFile(filepath.Join(tmpDir, depTreeInitFile), []byte(depTreeInitScript), 0666))
 }
 

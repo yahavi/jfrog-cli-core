@@ -37,6 +37,20 @@ allprojects {
 		}
 	}
 	apply plugin: com.jfrog.GradleDepTree
+}
+
+settingsEvaluated { settings ->
+    settings.pluginManagement {
+        repositories { 
+		maven {
+			url "https://myartifactory.com/artifactory/deps-repo"
+			credentials {
+				username = ''
+				password = 'my-access-token'
+			}
+		}
+        }
+    }
 }`
 
 func TestGradleTreesWithoutConfig(t *testing.T) {
@@ -240,7 +254,7 @@ func TestCreateDepTreeScript(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(tmpDir, depTreeInitFile))
 	assert.NoError(t, err)
 	gradleDepTreeJarPath := ioutils.DoubleWinPathSeparator(filepath.Join(tmpDir, gradleDepTreeJarFile))
-	assert.Equal(t, fmt.Sprintf(depTreeInitScript, "", gradleDepTreeJarPath, ""), string(content))
+	assert.Equal(t, fmt.Sprintf(depTreeInitScriptPattern, "", gradleDepTreeJarPath, "", ""), string(content))
 }
 
 func TestCreateDepTreeScriptWithRepositories(t *testing.T) {

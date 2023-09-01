@@ -1,0 +1,21 @@
+initscript {
+	repositories { %s
+		mavenCentral()
+	}
+	dependencies {
+		classpath files('%s')
+	}
+}
+
+allprojects {
+	repositories { %s
+	}
+	apply plugin: com.jfrog.GradleDepTree
+}
+
+settingsEvaluated { settings ->
+    settings.pluginManagement {
+        repositories { %s
+        }
+    }
+}
