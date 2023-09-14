@@ -2,7 +2,11 @@ package transferfiles
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"time"
+
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/transferfiles/api"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/transferfiles/state"
 	cmdutils "github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/utils"
@@ -10,8 +14,6 @@ import (
 	"github.com/jfrog/jfrog-client-go/utils/io/content"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
-	"os"
-	"time"
 )
 
 // Max errors that will be written in a file
@@ -118,10 +120,7 @@ func (mng *TransferErrorsMng) start() (err error) {
 		return err
 	}
 	defer func() {
-		e := mng.errorWriterMng.retryable.closeWriter()
-		if err == nil {
-			err = e
-		}
+		err = errors.Join(err, mng.errorWriterMng.retryable.closeWriter())
 	}()
 	writerMng.retryable = errorWriter{writer: writerRetry, filePath: retryFilePath}
 	// Init the content writer which is responsible for writing 'skipped errors' into files.
@@ -135,18 +134,14 @@ func (mng *TransferErrorsMng) start() (err error) {
 		return err
 	}
 	defer func() {
-		e := mng.errorWriterMng.skipped.closeWriter()
-		if err == nil {
-			err = e
-		}
+		err = errors.Join(err, mng.errorWriterMng.skipped.closeWriter())
 	}()
 	writerMng.skipped = errorWriter{writer: writerSkip, filePath: skipFilePath}
 	mng.errorWriterMng = writerMng
 
 	// Read errors from channel and write them to files.
 	for e := range mng.errorsChannelMng.channel {
-		err = mng.writeErrorContent(e)
-		if err != nil {
+		if err = mng.writeErrorContent(e); err != nil {
 			return
 		}
 	}

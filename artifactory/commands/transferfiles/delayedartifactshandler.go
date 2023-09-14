@@ -97,6 +97,8 @@ func consumeAllDelayFiles(base phaseBase) error {
 	delayFunctions := getDelayUploadComparisonFunctions(base.repoSummary.PackageType)
 	if len(filesToConsume) > 0 && len(delayFunctions) > 0 {
 		log.Info("Starting to handle delayed artifacts uploads...")
+		// Invoke handleDelayedArtifactsFiles without the first delay function to deploy the first group of delayed artifacts.
+		// handleDelayedArtifactsFiles contains recursive calls that maintain this functionality of removing the first delay function.
 		if err = handleDelayedArtifactsFiles(filesToConsume, base, delayFunctions[1:]); err == nil {
 			log.Info("Done handling delayed artifacts uploads.")
 		}
@@ -281,9 +283,9 @@ func (mng DelayedArtifactsChannelMng) close() {
 	close(mng.channel)
 }
 
-func createdDelayedArtifactsChannelMng() DelayedArtifactsChannelMng {
+func createdDelayedArtifactsChannelMng() *DelayedArtifactsChannelMng {
 	channel := make(chan api.FileRepresentation, fileWritersChannelSize)
-	return DelayedArtifactsChannelMng{channel: channel}
+	return &DelayedArtifactsChannelMng{channel: channel}
 }
 
 // SplitContentWriter writes to files a single JSON object that holds a list of records added as stream.

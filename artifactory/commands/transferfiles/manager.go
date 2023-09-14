@@ -41,7 +41,7 @@ type transferDelayAction func(phase phaseBase, addedDelayFiles []string) error
 // Transfer files using the 'producer-consumer' mechanism and apply a delay action.
 func (ftm *transferManager) doTransferWithProducerConsumer(transferAction transferActionWithProducerConsumerType, delayAction transferDelayAction) error {
 	ftm.pcDetails = newProducerConsumerWrapper()
-	return ftm.doTransfer(ftm.pcDetails, transferAction, delayAction)
+	return ftm.doTransfer(transferAction, delayAction)
 }
 
 // This function handles a transfer process as part of a phase.
@@ -53,60 +53,47 @@ func (ftm *transferManager) doTransferWithProducerConsumer(transferAction transf
 // Any deployment failures will be written to a file by the transferErrorsMng to be handled on next run.
 // The number of threads affect both the producer consumer if used, and limits the number of uploaded chunks. The number can be externally modified,
 // and will be updated on runtime by periodicallyUpdateThreads.
-func (ftm *transferManager) doTransfer(pcWrapper *producerConsumerWrapper, transferAction transferActionWithProducerConsumerType, delayAction transferDelayAction) error {
+func (ftm *transferManager) doTransfer(transferAction transferActionWithProducerConsumerType, delayAction transferDelayAction) error {
 	uploadChunkChan := make(chan UploadedChunk, transfer.MaxThreadsLimit)
-	var runWaitGroup sync.WaitGroup
-	var writersWaitGroup sync.WaitGroup
+	var runWaitGroup, writersWaitGroup sync.WaitGroup
 
 	// Manager for the transfer's errors statuses writing mechanism
-	errorsChannelMng := createErrorsChannelMng()
-	transferErrorsMng, err := newTransferErrorsToFile(ftm.repoKey, ftm.phaseId, state.ConvertTimeToEpochMilliseconds(ftm.startTime), &errorsChannelMng, ftm.progressBar, ftm.stateManager)
+	errorsChannelMng, err := ftm.startTransferErrorsMng(&writersWaitGroup)
 	if err != nil {
 		return err
 	}
-	writersWaitGroup.Add(1)
-	go func() {
-		defer writersWaitGroup.Done()
-		errorsChannelMng.err = transferErrorsMng.start()
-	}()
 
 	// Manager for the transfer's delayed artifacts writing mechanism
-	delayedArtifactsChannelMng := createdDelayedArtifactsChannelMng()
-	delayedArtifactsMng, err := newTransferDelayedArtifactsManager(&delayedArtifactsChannelMng, ftm.repoKey, state.ConvertTimeToEpochMilliseconds(ftm.startTime))
+	delayedArtifactsChannelMng, delayedArtifactsMng, err := ftm.startDelayedArtifactsManager(&writersWaitGroup)
 	if err != nil {
 		return err
 	}
-	if len(ftm.delayUploadComparisonFunctions) > 0 {
-		writersWaitGroup.Add(1)
-		go func() {
-			defer writersWaitGroup.Done()
-			delayedArtifactsChannelMng.err = delayedArtifactsMng.start()
-		}()
-	}
 
-	pollingTasksManager := newPollingTasksManager(totalNumberPollingGoRoutines)
-	err = pollingTasksManager.start(&ftm.phaseBase, &runWaitGroup, pcWrapper, uploadChunkChan, &errorsChannelMng)
-	if err != nil {
-		pollingTasksManager.stop()
-		return err
-	}
-	// Transfer action to execute.
-	runWaitGroup.Add(1)
-	var actionErr error
-	var delayUploadHelper = delayUploadHelper{
-		ftm.delayUploadComparisonFunctions,
-		&delayedArtifactsChannelMng,
-	}
-	go func() {
-		defer runWaitGroup.Done()
-		actionErr = transferAction(pcWrapper, uploadChunkChan, delayUploadHelper, &errorsChannelMng)
-		if pcWrapper == nil {
-			pollingTasksManager.stop()
-		}
-	}()
+	pollingTasksManager, actionErr := ftm.startTransferAction(transferAction, &errorsChannelMng, delayedArtifactsChannelMng, &runWaitGroup)
 
-	// Run producer consumers. This is a blocking function, which makes sure the producer consumers are closed before anything else.
-	executionErr := runProducerConsumers(pcWrapper)
+	// pollingTasksManager := newPollingTasksManager(totalNumberPollingGoRoutines)
+	// if err = pollingTasksManager.start(&ftm.phaseBase, &runWaitGroup, ftm.pcDetails, uploadChunkChan, &errorsChannelMng); err != nil {
+	// 	pollingTasksManager.stop()
+	// 	// Close writer channels.
+	// 	errorsChannelMng.close()
+	// 	delayedArtifactsChannelMng.close()
+	// 	return err
+	// }
+	// // Transfer action to execute.
+	// runWaitGroup.Add(1)
+	// var actionErr error
+	// var delayUploadHelper = delayUploadHelper{
+	// 	ftm.delayUploadComparisonFunctions,
+	// 	delayedArtifactsChannelMng,
+	// }
+	// go func() {
+	// 	defer runWaitGroup.Done()
+	// 	actionErr = transferAction(ftm.pcDetails, uploadChunkChan, delayUploadHelper, &errorsChannelMng)
+	// 	pollingTasksManager.stop()
+	// }()
+
+	// // Run producer consumers. This is a blocking function, which makes sure the producer consumers are closed before anything else.
+	// executionErr := runProducerConsumers(ftm.pcDetails)
 	pollingTasksManager.stop()
 	// Wait for 'transferAction', producer consumers and polling go routines to exit.
 	runWaitGroup.Wait()
@@ -115,25 +102,82 @@ func (ftm *transferManager) doTransfer(pcWrapper *producerConsumerWrapper, trans
 	delayedArtifactsChannelMng.close()
 	// Wait for writers channels to exit. Writers must exit last.
 	writersWaitGroup.Wait()
-
-	var returnedError error
-	for _, err := range []error{actionErr, errorsChannelMng.err, delayedArtifactsChannelMng.err, executionErr, ftm.getInterruptionErr()} {
-		if err != nil {
-			log.Error(err)
-			returnedError = err
-		}
+	// Return an error, if any occurred
+	if err := errors.Join(actionErr, errorsChannelMng.err, delayedArtifactsChannelMng.err, executionErr, ftm.getInterruptionErr()); err != nil {
+		return err
 	}
 
 	// If delayed action was provided, handle it now.
-	if returnedError == nil && delayAction != nil {
-		var addedDelayFiles []string
-		// If the transfer generated new delay files provide them
-		if delayedArtifactsMng.delayedWriter != nil {
-			addedDelayFiles = delayedArtifactsMng.delayedWriter.contentFiles
-		}
-		returnedError = delayAction(ftm.phaseBase, addedDelayFiles)
+	return ftm.handleDelayedArtifacts(delayAction, delayedArtifactsMng.delayedWriter)
+}
+
+func (ftm *transferManager) startTransferErrorsMng(writersWaitGroup *sync.WaitGroup) (errorsChannelMng ErrorsChannelMng, err error) {
+	errorsChannelMng = createErrorsChannelMng()
+	var transferErrorsMng *TransferErrorsMng
+	transferErrorsMng, err = newTransferErrorsToFile(ftm.repoKey, ftm.phaseId, state.ConvertTimeToEpochMilliseconds(ftm.startTime), &errorsChannelMng, ftm.progressBar, ftm.stateManager)
+	if err != nil {
+		return errorsChannelMng, err
 	}
-	return returnedError
+	writersWaitGroup.Add(1)
+	go func() {
+		defer writersWaitGroup.Done()
+		errorsChannelMng.err = transferErrorsMng.start()
+	}()
+	return
+}
+
+func (ftm *transferManager) startDelayedArtifactsManager(writersWaitGroup *sync.WaitGroup) (delayedArtifactsChannelMng *DelayedArtifactsChannelMng, delayedArtifactsMng *TransferDelayedArtifactsMng, err error) {
+	delayedArtifactsChannelMng = createdDelayedArtifactsChannelMng()
+	delayedArtifactsMng, err = newTransferDelayedArtifactsManager(delayedArtifactsChannelMng, ftm.repoKey, state.ConvertTimeToEpochMilliseconds(ftm.startTime))
+	if err != nil {
+		return
+	}
+	if len(ftm.delayUploadComparisonFunctions) > 0 {
+		writersWaitGroup.Add(1)
+		go func() {
+			defer writersWaitGroup.Done()
+			delayedArtifactsChannelMng.err = delayedArtifactsMng.start()
+		}()
+	}
+	return
+}
+
+func (ftm *transferManager) startTransferAction(transferAction transferActionWithProducerConsumerType, errorsChannelMng *ErrorsChannelMng,
+	delayedArtifactsChannelMng *DelayedArtifactsChannelMng, runWaitGroup *sync.WaitGroup) (pollingTasksManager *PollingTasksManager, err error) {
+	uploadChunkChan := make(chan UploadedChunk, transfer.MaxThreadsLimit)
+	pollingTasksManager = newPollingTasksManager(totalNumberPollingGoRoutines)
+	if err = pollingTasksManager.start(&ftm.phaseBase, runWaitGroup, ftm.pcDetails, uploadChunkChan, errorsChannelMng); err != nil {
+		pollingTasksManager.stop()
+		// Close writer channels.
+		return
+	}
+	// Transfer action to execute.
+	runWaitGroup.Add(1)
+	var delayUploadHelper = delayUploadHelper{
+		ftm.delayUploadComparisonFunctions,
+		delayedArtifactsChannelMng,
+	}
+	go func() {
+		defer runWaitGroup.Done()
+		err = transferAction(ftm.pcDetails, uploadChunkChan, delayUploadHelper, errorsChannelMng)
+		pollingTasksManager.stop()
+	}()
+
+	// Run producer consumers. This is a blocking function, which makes sure the producer consumers are closed before anything else.
+	return pollingTasksManager, runProducerConsumers(ftm.pcDetails)
+}
+
+func (ftm *transferManager) handleDelayedArtifacts(delayAction transferDelayAction, delayedWriter *SplitContentWriter) error {
+	if delayAction == nil {
+		return nil
+	}
+	// If delayed action was provided, handle it now.
+	var addedDelayFiles []string
+	// If the transfer generated new delay files provide them
+	if delayedWriter != nil {
+		addedDelayFiles = delayedWriter.contentFiles
+	}
+	return delayAction(ftm.phaseBase, addedDelayFiles)
 }
 
 type PollingTasksManager struct {
@@ -145,9 +189,9 @@ type PollingTasksManager struct {
 	totalRunningGoRoutines int
 }
 
-func newPollingTasksManager(totalGoRoutines int) PollingTasksManager {
+func newPollingTasksManager(totalGoRoutines int) *PollingTasksManager {
 	// The channel's size is 'totalGoRoutines', since there are a limited number of routines that need to be signaled to stop by 'doneChannel'.
-	return PollingTasksManager{doneChannel: make(chan bool, totalGoRoutines), totalGoRoutines: totalGoRoutines}
+	return &PollingTasksManager{doneChannel: make(chan bool, totalGoRoutines), totalGoRoutines: totalGoRoutines}
 }
 
 // Runs 2 go routines:
