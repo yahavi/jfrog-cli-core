@@ -3,6 +3,9 @@ package transferfiles
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"sync"
+
 	"github.com/jfrog/gofrog/parallel"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/transferfiles/api"
 	cmdutils "github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/utils"
@@ -13,13 +16,12 @@ import (
 	servicesUtils "github.com/jfrog/jfrog-client-go/artifactory/services/utils"
 	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"golang.org/x/exp/slices"
-	"io"
-	"sync"
 
 	"github.com/jfrog/jfrog-client-go/utils/log"
 
-	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"time"
+
+	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 )
 
 const (
@@ -203,9 +205,7 @@ func createSearchPropertyTask(property Property, repos []string, args cmdutils.R
 
 // Get all the files that contains the given property using AQL
 func runSearchPropertyInFilesAql(serviceManager artifactory.ArtifactoryServicesManager, property Property) (result *servicesUtils.AqlSearchResult, err error) {
-	result = &servicesUtils.AqlSearchResult{}
-	err = runAqlService(serviceManager, getSearchPropertyInFilesQuery(property), result)
-	return
+	return utils.RunAql(serviceManager, getSearchPropertyInFilesQuery(property))
 }
 
 // Get the query that search files with specific property

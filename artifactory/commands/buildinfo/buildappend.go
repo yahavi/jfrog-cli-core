@@ -2,16 +2,16 @@ package buildinfo
 
 import (
 	"fmt"
-	"net/url"
 	"strconv"
 	"time"
 
 	buildinfo "github.com/jfrog/build-info-go/entities"
+	serviceUtils "github.com/jfrog/jfrog-client-go/artifactory/services/utils"
 
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
+	"github.com/jfrog/jfrog-client-go/artifactory"
 	"github.com/jfrog/jfrog-client-go/artifactory/services"
-	"github.com/jfrog/jfrog-client-go/http/httpclient"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 )
@@ -49,14 +49,20 @@ func (bac *BuildAppendCommand) Run() error {
 		return err
 	}
 
+	// Create services manager
+	servicesManager, err := utils.CreateServiceManager(bac.serverDetails, -1, 0, false)
+	if err != nil {
+		return err
+	}
+
 	// Calculate build timestamp
-	timestamp, err := bac.getBuildTimestamp()
+	timestamp, err := bac.getBuildTimestamp(servicesManager)
 	if err != nil {
 		return err
 	}
 
 	// Get checksum headers from the build info artifact
-	checksumDetails, err := bac.getChecksumDetails(timestamp)
+	checksumDetails, err := bac.getChecksumDetails(servicesManager, timestamp)
 	if err != nil {
 		return err
 	}
@@ -66,8 +72,8 @@ func (bac *BuildAppendCommand) Run() error {
 		partial.ModuleType = buildinfo.Build
 		partial.ModuleId = bac.buildNameToAppend + "/" + bac.buildNumberToAppend
 		partial.Checksum = buildinfo.Checksum{
-			Sha1: checksumDetails.Sha1,
-			Md5:  checksumDetails.Md5,
+			Sha1: checksumDetails.Actual_Sha1,
+			Md5:  checksumDetails.Actual_Md5,
 		}
 	}
 	err = utils.SavePartialBuildInfo(buildName, buildNumber, bac.buildConfiguration.GetProject(), populateFunc)
@@ -99,16 +105,10 @@ func (bac *BuildAppendCommand) SetBuildNumberToAppend(buildNumber string) *Build
 
 // Get build timestamp of the build to append. The build timestamp has to be converted to milliseconds from epoch.
 // For example, start time of: 2020-11-27T14:33:38.538+0200 should be converted to 1606480418538.
-func (bac *BuildAppendCommand) getBuildTimestamp() (int64, error) {
-	// Create services manager to get build-info from Artifactory.
-	sm, err := utils.CreateServiceManager(bac.serverDetails, -1, 0, false)
-	if err != nil {
-		return 0, err
-	}
-
+func (bac *BuildAppendCommand) getBuildTimestamp(servicesManager artifactory.ArtifactoryServicesManager) (int64, error) {
 	// Get published build-info from Artifactory.
 	buildInfoParams := services.BuildInfoParams{BuildName: bac.buildNameToAppend, BuildNumber: bac.buildNumberToAppend, ProjectKey: bac.buildConfiguration.GetProject()}
-	buildInfo, found, err := sm.GetBuildInfo(buildInfoParams)
+	buildInfo, found, err := servicesManager.GetBuildInfo(buildInfoParams)
 	if err != nil {
 		return 0, err
 	}
@@ -133,24 +133,11 @@ func (bac *BuildAppendCommand) getBuildTimestamp() (int64, error) {
 }
 
 // Download MD5 and SHA1 from the build info artifact.
-func (bac *BuildAppendCommand) getChecksumDetails(timestamp int64) (buildinfo.Checksum, error) {
-	serviceDetails, err := bac.serverDetails.CreateArtAuthConfig()
+func (bac *BuildAppendCommand) getChecksumDetails(servicesManager artifactory.ArtifactoryServicesManager, timestamp int64) (serviceUtils.ResultItem, error) {
+	aqlQuery := serviceUtils.CreateAqlQueryForBuildInfo(bac.buildConfiguration.GetProject(), bac.buildNameToAppend, bac.buildNumberToAppend, strconv.Itoa(int(timestamp)))
+	results, err := utils.RunAql(servicesManager, aqlQuery)
 	if err != nil {
-		return buildinfo.Checksum{}, err
+		return serviceUtils.ResultItem{}, err
 	}
-	client, err := httpclient.ClientBuilder().SetRetries(3).Build()
-	if err != nil {
-		return buildinfo.Checksum{}, err
-	}
-
-	buildInfoRepo := "artifactory-build-info"
-	if bac.buildConfiguration.GetProject() != "" {
-		buildInfoRepo = url.PathEscape(bac.buildConfiguration.GetProject()) + "-build-info"
-	}
-	buildInfoPath := fmt.Sprintf("%v%v/%v/%v-%v.json", serviceDetails.GetUrl(), buildInfoRepo, url.PathEscape(bac.buildNameToAppend), url.PathEscape(bac.buildNumberToAppend), strconv.FormatInt(timestamp, 10))
-	details, _, err := client.GetRemoteFileDetails(buildInfoPath, serviceDetails.CreateHttpClientDetails())
-	if err != nil {
-		return buildinfo.Checksum{}, err
-	}
-	return details.Checksum, nil
+	return results.Results[0], nil
 }

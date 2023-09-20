@@ -4,11 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+
 	"github.com/jfrog/build-info-go/build"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
 	"github.com/jfrog/jfrog-client-go/access"
 	"github.com/jfrog/jfrog-client-go/artifactory"
+	serviceUtils "github.com/jfrog/jfrog-client-go/artifactory/services/utils"
 	"github.com/jfrog/jfrog-client-go/auth"
 	clientConfig "github.com/jfrog/jfrog-client-go/config"
 	"github.com/jfrog/jfrog-client-go/distribution"
@@ -18,12 +26,6 @@ import (
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	ioUtils "github.com/jfrog/jfrog-client-go/utils/io"
 	"github.com/jfrog/jfrog-client-go/utils/log"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
-	"path"
-	"path/filepath"
 )
 
 func GetProjectDir(global bool) (string, error) {
@@ -282,4 +284,25 @@ func GetTestDataPath() (string, error) {
 		return "", errorutils.CheckError(err)
 	}
 	return filepath.Join(dir, "testdata"), nil
+}
+
+func RunAql(serviceManager artifactory.ArtifactoryServicesManager, query string) (result *serviceUtils.AqlSearchResult, err error) {
+	reader, err := serviceManager.Aql(query)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if reader != nil {
+			err = errors.Join(err, errorutils.CheckError(reader.Close()))
+		}
+	}()
+
+	respBody, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, errorutils.CheckError(err)
+	}
+
+	result = &serviceUtils.AqlSearchResult{}
+	err = json.Unmarshal(respBody, result)
+	return result, errorutils.CheckError(err)
 }

@@ -2,10 +2,8 @@ package transferfiles
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -147,24 +145,7 @@ func runAql(ctx context.Context, sourceRtDetails *config.ServerDetails, query st
 	if err != nil {
 		return nil, err
 	}
-	reader, err := serviceManager.Aql(query)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if reader != nil {
-			err = errors.Join(err, errorutils.CheckError(reader.Close()))
-		}
-	}()
-
-	respBody, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, errorutils.CheckError(err)
-	}
-
-	result = &serviceUtils.AqlSearchResult{}
-	err = json.Unmarshal(respBody, result)
-	return result, errorutils.CheckError(err)
+	return utils.RunAql(serviceManager, query)
 }
 
 func createTargetAuth(targetRtDetails *config.ServerDetails, proxyKey string) api.TargetAuth {
