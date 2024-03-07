@@ -16,7 +16,7 @@ const (
 	// DefaultThreads is the default number of threads working while transferring Artifactory's data
 	DefaultThreads = 8
 	// Maximum working threads allowed to execute the AQL queries and upload chunks for build-info repositories
-	MaxBuildInfoThreads = 8
+	MaxBuildInfoThreads = 12
 	// Maximum working threads allowed to execute the AQL queries
 	MaxChunkBuilderThreads = 16
 
